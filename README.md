@@ -1,91 +1,175 @@
 # Cargo Remote
 
-***Use with caution, I didn't test this software well and it is a really hacky
-(at least for now). If you want to test it please create a VM or at least a separate
-user on your build host***
+Remote Rust project build and execution using temporary cloud servers.
 
-## Why I built it
-One big annoyance when working on rust projects on my notebook are the compile
-times. Since I'm using rust nightly for some of my projects I have to recompile
-rather often. Currently there seem to be no good remote-build integrations for
-rust, so I decided to build one my own.
+This tool creates a remote server, transfers your current project, runs any
+Cargo command remotely, and optionally copies back the `target/` build artifacts.
+It is designed to reduce compile time impact on local machines.
 
-## Planned capabilities
-This first version is very simple (could have been a bash script), but I intend to
-enhance it to a point where it detects compatibility between local and remote
-versions, allows (nearly) all cargo commands and maybe even load distribution
-over multiple machines.
+> Linux-based servers only (e.g. Hetzner Cloud). macOS and Windows can be used
+> as clients.
 
-## Usage
-For now only `cargo remote [FLAGS] [OPTIONS] <command>` works: it copies the
-current project to a temporary directory (`~/remote-builds/<project_name>`) on
-the remote server, calls `cargo <command>` remotely and optionally (`-c`) copies
-back the resulting target folder. This assumes that server and client are running
-the same rust version and have the same processor architecture. On the client `ssh`
-and `rsync` need to be installed.
+---
 
-If you want to pass remote flags you have to end the options/flags section using
-`--`. E.g. to build in release mode and copy back the result use:
-```bash
-cargo remote -c -- build --release
-```
+## Features
 
-### Configuration
-You can place a config file called `.cargo-remote.toml` in the same directory as your
-`Cargo.toml` or at `~/.config/cargo-remote/cargo-remote.toml`. There you can define a
-default remote build host and user. It can be overridden by the `-r` flag.
+- Create and delete on-demand cloud build servers
+- Remote `cargo build`, `cargo run`, and `cargo clean`
+- Fast file sync using `rsync`
+- Automatically installs:
+  - Rust toolchain
+  - GCC, LLVM, Make
+  - musl + musl‐tools
+  - OpenSSL development libraries
+- Cloud-init readiness checks displayed on status
+- SSH key–based access
+- Configuration stored locally for multiple servers
 
-Example config file:
-```toml
-[[remote]]
-name = "myRemote" # Not needed for a single remote
-host = "myUser@myServer" # Could also be a ssh config entry
-ssh_port = 42 # defaults to 22
-temp_dir = "~/rust" # Default is "~/remote-builds"
-env = "~/.profile" # Default is "/etc/profile"
-```
+---
 
-### Flags and options
+## Installation
 
-```
-USAGE:
-    cargo remote [FLAGS] [OPTIONS] <command> [remote options]...
-
-FLAGS:
-        --help               Prints help information
-    -h, --transfer-hidden    Transfer hidden files and directories to the build server
-        --no-copy-lock       don't transfer the Cargo.lock file back to the local machine
-    -V, --version            Prints version information
-
-OPTIONS:
-    -b, --build-env <build_env>              Set remote environment variables. RUST_BACKTRACE, CC, LIB, etc.  [default:
-                                             RUST_BACKTRACE=1]
-    -c, --copy-back <copy_back>              Transfer the target folder or specific file from that folder back to the
-                                             local machine
-    -e, --env <env>                          Environment profile. default_value = /etc/profile
-    -H, --remote-host <host>                 Remote ssh build server with user or the name of the ssh entry
-        --manifest-path <manifest_path>      Path to the manifest to execute [default: Cargo.toml]
-    -r, --remote <name>                      The name of the remote specified in the config
-    -d, --rustup-default <rustup_default>    Rustup default (stable|beta|nightly) [default: stable]
-    -p, --remote-ssh-port <ssh_port>         The ssh port to communicate with the build server
-    -t, --remote-temp-dir <temp_dir>         The directory where cargo builds the project
-
-ARGS:
-    <command>              cargo command that will be executed remotely
-    <remote options>...    cargo options and flags that will be applied remotely
-```
-
-
-## How to install
 ```bash
 git clone https://github.com/sgeisler/cargo-remote
 cargo install --path cargo-remote/
 ```
 
-### MacOS Problems
-It was reported that the `rsync` version shipped with MacOS doesn't support the progress flag and thus fails when
-`cargo-remote` tries to use it. You can install a newer version by running
+Ensure `ssh` and a modern `rsync` are installed on your client machine.
+
+macOS users may need:
+
 ```bash
 brew install rsync
 ```
-See also [#10](https://github.com/sgeisler/cargo-remote/issues/10).
+
+---
+
+## Quick Start
+
+### 1) Configure a provider (Hetzner)
+
+```bash
+cargo remote configure
+```
+
+Enter:
+
+- Hetzner API key
+- SSH key paths
+- Location / server type / image
+
+This creates a default configuration stored at:
+
+```
+~/.config/cargo-remote/configs.json
+```
+
+---
+
+### 2) Start a remote session
+
+Inside any Rust project:
+
+```bash
+cargo remote begin
+```
+
+You can inspect readiness anytime:
+
+```bash
+cargo remote status
+```
+
+If cloud-init is still running, full status is displayed.
+
+---
+
+### 3) Run or build remotely
+
+```bash
+cargo remote build --release
+cargo remote run
+cargo remote clean
+```
+
+All commands behave like local Cargo operations, but execute remotely.
+
+---
+
+### 4) End the session
+
+```bash
+cargo remote end
+```
+
+This terminates the remote server and removes the session record.
+
+---
+
+## Configuration
+
+Example config file:
+
+```toml
+[[remote]]
+name = "hetzner"
+host = "myUser@myIP"
+ssh_port = 22
+temp_dir = "~/remote-builds"
+env = "/etc/profile.d/cargo.sh"
+```
+
+Multiple remote configurations can be stored.
+
+Select active config via:
+
+```bash
+cargo remote begin --config myServerName
+```
+
+---
+
+## Preinstall Packages
+
+You may define additional server packages during setup:
+
+```bash
+cargo remote begin --preinstall git,cmake
+```
+
+They will be included in cloud-init under the `packages:` list.
+
+---
+
+## How it Works
+
+1. A remote server is created via provider API
+2. Cloud-init installs Rust and required system packages
+3. Project directory is synced via `rsync`
+4. Cargo commands are executed via SSH
+5. Target artifacts may optionally sync back to the client
+
+Session state is stored at:
+
+```
+~/.local/share/cargo-remote/state.json
+```
+
+---
+
+## Safety Notice
+
+Use only on clean, disposable cloud VMs. The tool executes commands remotely as
+`root`, so do not use on production systems.
+
+---
+
+## License
+
+MIT
+
+---
+
+## Contributing
+
+Pull requests and provider extensions are welcome.
